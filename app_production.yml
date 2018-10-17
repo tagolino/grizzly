@@ -1,0 +1,16 @@
+runtime: custom
+env: flex
+
+service: grizzly-production
+
+env_variables:
+  WHITELIST: ENV_WHITELIST
+  CDN_HOSTNAME: ENV_CDN_HOSTNAME
+  ENV: 'production'
+
+# instance_class: B8
+manual_scaling:
+  instances: 2
+
+beta_settings:
+  cloud_sql_instances: 'promotion-217704:asia-northeast1:grizzly-production'
