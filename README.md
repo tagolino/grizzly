@@ -1,1 +1,1 @@
-# grizzly
+# Promotion project backend
