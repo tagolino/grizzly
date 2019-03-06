@@ -1,0 +1,152 @@
+[
+{
+    "model": "envelope.envelopelevel",
+    "pk": 1,
+    "fields": {
+        "name": "100元+",
+        "amount": 100.0,
+        "quantity": 1,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 2,
+    "fields": {
+        "name": "500元+",
+        "amount": 500.0,
+        "quantity": 2,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 3,
+    "fields": {
+        "name": "3000元+",
+        "amount": 3000.0,
+        "quantity": 3,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 4,
+    "fields": {
+        "name": "1万元+",
+        "amount": 10000.0,
+        "quantity": 5,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 5,
+    "fields": {
+        "name": "5万元+",
+        "amount": 50000.0,
+        "quantity": 8,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 6,
+    "fields": {
+        "name": "10万元+",
+        "amount": 100000.0,
+        "quantity": 15,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 7,
+    "fields": {
+        "name": "30万元+",
+        "amount": 300000.0,
+        "quantity": 30,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 8,
+    "fields": {
+        "name": "50万元+",
+        "amount": 500000.0,
+        "quantity": 50,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 9,
+    "fields": {
+        "name": "100万元+",
+        "amount": 1000000.0,
+        "quantity": 88,
+        "envelope_type": 0
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 10,
+    "fields": {
+        "name": "100元+",
+        "amount": 100.0,
+        "quantity": 1,
+        "envelope_type": 1
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 11,
+    "fields": {
+        "name": "2000元+",
+        "amount": 2000.0,
+        "quantity": 3,
+        "envelope_type": 1
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 12,
+    "fields": {
+        "name": "10000元+",
+        "amount": 10000.0,
+        "quantity": 8,
+        "envelope_type": 1
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 13,
+    "fields": {
+        "name": "30000元+",
+        "amount": 30000.0,
+        "quantity": 15,
+        "envelope_type": 1
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 14,
+    "fields": {
+        "name": "50000元+",
+        "amount": 50000.0,
+        "quantity": 20,
+        "envelope_type": 1
+    }
+},
+{
+    "model": "envelope.envelopelevel",
+    "pk": 15,
+    "fields": {
+        "name": "100000元+",
+        "amount": 100000.0,
+        "quantity": 35,
+        "envelope_type": 1
+    }
+}
+]

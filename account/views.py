@@ -10,8 +10,12 @@ from rest_framework.decorators import (api_view,
                                        permission_classes)
 from rest_framework.response import Response
 
-from account.models import Staff
-from account.serializers import StaffSerializer
+from account.filters import MemberFilters
+from account.forms import CaptchaForm
+from account.models import Member, Staff
+from account.serializers import (MemberAdminSerializer,
+                                 MemberSerializer,
+                                 StaffSerializer)
 from grizzly.utils import (parse_request_for_token,
                            get_user_type,
                            get_valid_token,
@@ -33,6 +37,48 @@ class StaffViewSet(mixins.RetrieveModelMixin, mixins.ListModelMixin,
     queryset = Staff.objects.all()
     serializer_class = StaffSerializer
     renderer_classes = [GrizzlyRenderer]
+
+
+class MemberAdminViewset(mixins.RetrieveModelMixin, mixins.ListModelMixin,
+                         mixins.CreateModelMixin, mixins.UpdateModelMixin,
+                         mixins.DestroyModelMixin, viewsets.GenericViewSet):
+    model = Member
+    permission_classes = [Or(IsStaff, IsAdmin)]
+    queryset = Member.objects.all().order_by('-created_at')
+    filter_class = MemberFilters
+    serializer_class = MemberAdminSerializer
+    renderer_classes = [GrizzlyRenderer]
+
+
+class MemberViewset(mixins.RetrieveModelMixin, mixins.ListModelMixin,
+                    viewsets.GenericViewSet):
+    model = Member
+    permission_classes = []
+    queryset = Member.objects.all()
+    filter_class = MemberFilters
+    serializer_class = MemberSerializer
+    renderer_classes = [GrizzlyRenderer]
+
+
+class CaptchaMemberViewSet(mixins.ListModelMixin,
+                           viewsets.GenericViewSet):
+    permission_classes = []
+    queryset = []
+
+    def list(self, request):
+        """
+            Request captcha code.
+        """
+
+        captcha_form = CaptchaForm()
+        form_str = str(captcha_form)
+        idx = form_str.find('src="')
+        src_list = form_str[idx:].split(' ', 1)
+
+        data = {'captcha_src': src_list[0][5:-2],
+                'captcha_val': src_list[1].split(' ')[5][7:-1]}
+
+        return generate_response(constants.ALL_OK, data=data)
 
 
 @csrf_exempt
