@@ -3,6 +3,7 @@ import logging
 import os
 import zipfile
 
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from django.http import HttpResponse
 from django.utils import timezone
@@ -13,11 +14,18 @@ from io import BytesIO
 from account.models import Member
 from grizzly.utils import get_user_type
 from oauth2_provider.models import AccessToken
-from promotion.models import (GAME_TYPE_ELECTRONICS,
+from promotion.models import (EGAME_SUMMARY_EXPORT,
+                              GAME_TYPE_ELECTRONICS,
+                              GAME_TYPE_LIVE,
+                              LIVE_SUMMARY_EXPORT,
                               PromotionBet,
                               PromotionClaim,
+                              ImportExportLog,
+                              REQUEST_LOG_COMPLETED,
+                              REQUEST_LOG_CANCELED,
                               Summary)
-from envelope.models import (EnvelopeClaim)
+from envelope.models import (EnvelopeClaim,
+                             EventType)
 
 
 logger = logging.getLogger(__name__)
@@ -271,46 +279,23 @@ class PromotionMemberReportWriter(object):
 
     def __init__(self, request):
         self.request = request
+        self.params = self.request.GET.copy()
+        self.game_type = int(self.params.get('game_type', '0'))
 
-    def get_member_data(self, params):
-        filters = {}
-        user, user_type = parse_token_param(self.request)
+        if self.game_type == GAME_TYPE_ELECTRONICS:
+            request_type = EGAME_SUMMARY_EXPORT
+        elif self.game_type == GAME_TYPE_LIVE:
+            request_type = LIVE_SUMMARY_EXPORT
 
-        if user_type not in {'staff', 'admin'}:
-            return Member.objects.none()
-
-        if params.get('status'):
-            filters.update(status=params.get('status'))
-
-        start_date = params.get('created_at_after')
-        end_date = params.get('created_at_before')
-        if start_date and end_date:
-            start_date = datetime.strptime(
-                f'{start_date} 00:00:00', '%Y-%m-%d %H:%M:%S')
-
-            end_date = datetime.strptime(
-                f'{end_date} 23:59:59', '%Y-%m-%d %H:%M:%S')
-
-            filters.update(created_at__range=(start_date, end_date))
-
-        if params.get('username'):
-            filters.update(username=params.get('username'))
-
-        if params.get('username_q'):
-            filters.update(username__contains=params.get('username_q'))
-
-        return list(Member.objects.filter(**filters).
-                    order_by('username').
-                    values('username',
-                           'promotion_bet_level__name',
-                           'total_promotion_bet',
-                           'current_week_bonus',
-                           'previous_week_bet_level__name',
-                           'previous_month_bet_level__name'))
+        self.request_log = ImportExportLog.objects.create(
+            game_type=self.game_type,
+            request_type=request_type,
+        )
 
     def get_summary_data(self, params):
         filters = {}
         user, user_type = parse_token_param(self.request)
+        self.request_log.created_by = user
         if user_type not in {'staff', 'admin'}:
             return Summary.objects.none()
 
@@ -341,18 +326,17 @@ class PromotionMemberReportWriter(object):
                     order_by('member__username').
                     values('member__username',
                            'promotion_bet_level__name',
+                           'promotion_bet_level__weekly_bonus',
+                           'promotion_bet_level__monthly_bonus',
                            'total_promotion_bet',
                            'current_week_bonus',
                            'previous_week_bet_level__name',
-                           'previous_month_bet_level__name'))
+                           'previous_month_bet_level__name',
+                           'total_bonus',))
 
     def write_report(self):
-        params = self.request.GET.copy()
-
-        if int(params.get('game_type', '0')) == GAME_TYPE_ELECTRONICS:
-            return self.__write_report_file(self.get_member_data(params))
-        else:
-            return self.__write_report_file(self.get_summary_data(params))
+        summary_data = self.get_summary_data(self.params)
+        return self.__write_report_file(summary_data)
 
     def __write_report_file(self, data):
         filename = timezone.now().strftime('%Y%m%d')
@@ -379,41 +363,61 @@ class PromotionMemberReportWriter(object):
         # delete temporary csv file
         os.remove(csv_file)
 
+        self.request_log.status = REQUEST_LOG_COMPLETED
+        self.request_log.filename = f'{fname}'
+        self.request_log.save()
+
         return response
 
     def __write_to_csv(self, csv_file, data):
         headers = self.__get_headers()
 
         with open(csv_file, 'w') as csvf:
-            csv.writer(csvf).writerow(
-                [s for s in headers.keys()])
-            for d in data:
-                username = d.get('username') or d.get('member__username')
-                promotion_bet_level = d.get('promotion_bet_level__name') or '-'
-                previous_week_bet_level = d.get(
-                    'previous_week_bet_level__name') or '-'
-                previous_month_bet_level = d.get(
-                    'previous_month_bet_level__name') or '-'
-                total_promotion_bet = d.get('total_promotion_bet')
-                current_week_bonus = d.get('current_week_bonus')
+            try:
+                csv.writer(csvf).writerow(
+                    [s for s in headers.keys()])
+                for d in data:
+                    username = d.get('username') or d.get('member__username')
+                    promotion_bet_level = d.get('promotion_bet_level__name') or '-'
+                    weekly_bonus = d.get('promotion_bet_level__weekly_bonus') or 0
+                    monthly_bonus = d.get('promotion_bet_level__monthly_bonus') or 0
+                    previous_week_bet_level = d.get(
+                        'previous_week_bet_level__name') or '-'
+                    previous_month_bet_level = d.get(
+                        'previous_month_bet_level__name') or '-'
+                    total_promotion_bet = d.get('total_promotion_bet')
+                    current_week_bonus = d.get('current_week_bonus')
+                    total_bonus = d.get('total_bonus')
 
-                csv.writer(csvf).writerow([
-                    username,
-                    promotion_bet_level,
-                    previous_week_bet_level,
-                    previous_month_bet_level,
-                    f'{total_promotion_bet:,.2f}',
-                    f'{current_week_bonus:,.2f}',
-                ])
+                    csv.writer(csvf).writerow([
+                        username,
+                        promotion_bet_level,
+                        previous_week_bet_level,
+                        previous_month_bet_level,
+                        f'{total_promotion_bet:,.2f}',
+                        f'{current_week_bonus:,.2f}',
+                        f'{weekly_bonus:,.2f}',
+                        f'{current_week_bonus + weekly_bonus:,.2f}',
+                        f'{monthly_bonus:,.2f}',
+                        f'{total_bonus:,.2f}',
+                    ])
+            except Exception as exc:
+                self.request_log.memo = f'{exc}'
+                self.request_log.status = REQUEST_LOG_CANCELED
+                self.request_log.save()
 
     def __get_headers(self):
         csv_headers = {
             '会员账号': 'username',
-            '本周 促销投注等级': 'promotion_bet_level',
+            '本周促销投注等级': 'promotion_bet_level',
             '上周促销投注等级': 'previous_week_bet_level',
-            '上月 促销投注等级': 'previous_month_bet_level',
+            '上月促销投注等级': 'previous_month_bet_level',
             '累计有效投注': 'total_promotion_bet',
-            '总促销奖金': 'current_week_bonus'
+            '等级增加奖金': 'current_week_bonus',
+            '周奖金': 'promotion_bet_level.weekly_bonus',
+            '本周可获奖金(等级增加奖金 + 周奖金)': 'total_week_bonus',
+            '月俸禄': 'promotion_bet_level.monthly_bonus',
+            '总奖金': 'total_bonus'
         }
 
         return csv_headers
@@ -424,6 +428,7 @@ class EnvelopeClaimReportWriter(object):
     def __init__(self, request):
         self.request = request
         self.status_options = dict(STATUS_OPTIONS)
+        self.event_type = None
 
     def get_queryset(self, data):
         filters = {}
@@ -431,7 +436,12 @@ class EnvelopeClaimReportWriter(object):
         if user_type not in {'staff', 'admin'}:
             return EnvelopeClaim.objects.none()
 
-        envelope_type = data.get('type', 0)
+        try:
+            self.event_type = EventType.objects.get(
+                code=data.get('event_type', ''))
+        except EventType.DoesNotExist:
+            return EnvelopeClaim.objects.none()
+
         username = data.get('username_q')
         start_date = data.get('created_at_after')
         end_date = data.get('created_at_before')
@@ -451,12 +461,16 @@ class EnvelopeClaimReportWriter(object):
         if username:
             filters.update(username__contains=username)
 
-        filters.update(envelope_type=envelope_type)
+        filters.update(event_type=self.event_type)
 
-        envelope_claims = EnvelopeClaim.objects.filter(**filters).\
-            values('username', 'created_at__date', 'updated_at__date',
-                   'status').\
-            annotate(total=Sum('amount'))
+        if self.event_type.is_reward:
+            envelope_claims = EnvelopeClaim.objects.filter(**filters).\
+                values('username', 'reward__name', 'created_at__date',
+                       'updated_at__date', 'status')
+        else:
+            envelope_claims = EnvelopeClaim.objects.filter(**filters).\
+                values('username', 'created_at__date', 'updated_at__date',
+                       'status').annotate(total=Sum('amount'))
 
         return envelope_claims
 
@@ -514,12 +528,17 @@ class EnvelopeClaimReportWriter(object):
                 csv.writer(csvf).writerow(rows)
 
     def __get_headers(self):
-        csv_headers = {
-            '会员账号': 'username',
-            '红包金额': 'total',
-            '创建时间': 'created_at__date',
-            '更新时间': 'updated_at__date',
-            '状态': 'status'
-        }
+        csv_headers = OrderedDict()
+
+        csv_headers.update([(u'会员账号', 'username')])
+        if self.event_type.is_reward:
+            csv_headers.update([(u'奖励', 'reward__name')])
+        else:
+            csv_headers.update([(u'红包金额', 'total')])
+        csv_headers.update([
+            (u'创建时间', 'created_at__date'),
+            (u'更新时间', 'updated_at__date'),
+            (u'状态', 'status')
+        ])
 
         return csv_headers

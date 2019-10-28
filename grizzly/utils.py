@@ -1,12 +1,15 @@
 import logging
+import os
 
 from django_otp.plugins.otp_totp.models import TOTPDevice
+from django.utils.deconstruct import deconstructible
 from django.utils.translation import ugettext as _
 from oauth2_provider.models import AccessToken
 from rest_framework import renderers
 from rest_framework.views import exception_handler
-from rest_framework.exceptions import Throttled
+from rest_framework.exceptions import ErrorDetail, Throttled
 
+from account.forms import CaptchaForm
 from grizzly.lib import constants
 
 
@@ -92,6 +95,16 @@ def parse_request_for_token(request):
     return None, None
 
 
+@deconstructible
+class PathAndRename(object):
+
+    def __init__(self, sub_path):
+        self.path = sub_path
+
+    def __call__(self, instance, filename):
+        return os.path.join(self.path, filename)
+
+
 def get_valid_token(request, try_cookies=False, select_related_user=True):
     # get access token string
     auth_str = request.META.get('HTTP_AUTHORIZATION') or ''
@@ -141,6 +154,16 @@ def get_request_data(request):
         data = request.GET.dict()
 
     return data
+
+
+def verify_captcha(captcha_dict):
+    """
+        Verify captcha code.
+    """
+
+    verify_form = CaptchaForm(captcha_dict)
+
+    return verify_form.is_valid()
 
 
 class GrizzlyRenderer(renderers.JSONRenderer):
@@ -225,6 +248,9 @@ class GrizzlyRenderer(renderers.JSONRenderer):
     def __get_errors_dict(self, data):
         error_codes = []
         for key, val in data.items():
+            if isinstance(val, ErrorDetail):
+                val = str(val)
+
             if key == 'error' or key == 'error_code':
                 error_codes.extend(self.__parse_error_list(val))
             elif isinstance(key, int):

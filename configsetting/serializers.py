@@ -61,6 +61,25 @@ class GlobalPreferencesSerializer(serializers.ModelSerializer):
     def validate_ad_header(self, data):
         return self._validate_image(data)
 
+    def _validate_number_value(self, data):
+        try:
+            value = float(data.get('value'))
+
+            return data
+        except Exception as exc:
+            raise serializers.ValidationError({
+                constants.NOT_ALLOWED: _('Invalid value type.')
+            })
+
+    def validate_envelope_pool_amount(self, data):
+        return self._validate_number_value(data)
+
+    def validate_envelope_claim_amount_from(self, data):
+        return self._validate_number_value(data)
+
+    def validate_envelope_claim_amount_to(self, data):
+        return self._validate_number_value(data)
+
 
 class GlobalPreferencesMemberSerializer(serializers.ModelSerializer):
     value = serializers.SerializerMethodField()

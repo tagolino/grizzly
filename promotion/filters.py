@@ -7,6 +7,7 @@ from promotion.models import (Announcement,
                               PromotionBetMonthly,
                               PromotionElement,
                               PromotionClaim,
+                              ImportExportLog,
                               Summary)
 
 
@@ -80,10 +81,13 @@ class PromotionBetFilter(django_filters.FilterSet):
                                            lookup_expr='contains')
     game_type = django_filters.NumberFilter(field_name='game_type',
                                             lookup_expr='exact')
+    active = django_filters.BooleanFilter(field_name='active',
+                                          lookup_expr='exact')
 
     class Meta:
         model = PromotionBet
-        fields = ('username', 'created_by', 'updated_by', 'game_type',)
+        fields = ('username', 'created_by', 'updated_by', 'game_type',
+                  'active')
 
 
 class PromotionBetMonthlyFilter(django_filters.FilterSet):
@@ -140,3 +144,27 @@ class SummaryFilter(django_filters.FilterSet):
     class Meta:
         model = Summary
         fields = ('member', 'game_type',)
+
+
+class ImportExportLogFilter(django_filters.FilterSet):
+    request_type = django_filters.NumberFilter(field_name='request_type',
+                                               lookup_expr='exact')
+    status = django_filters.NumberFilter(field_name='status',
+                                         lookup_expr='exact')
+    filename = django_filters.CharFilter(field_name='filename',
+                                         lookup_expr='exact')
+    filename_q = django_filters.CharFilter(field_name='filename',
+                                           lookup_expr='icontains')
+    created_by = django_filters.CharFilter(field_name='created_by__username',
+                                           lookup_expr='exact')
+    created_by_q = django_filters.CharFilter(field_name='created_by__username',
+                                             lookup_expr='icontains')
+    created_at = django_filters.DateFromToRangeFilter()
+    updated_at = django_filters.DateFromToRangeFilter()
+    game_type = django_filters.NumberFilter(field_name='game_type',
+                                            lookup_expr='exact')
+
+    class Meta:
+        model = ImportExportLog
+        fields = ('request_type', 'filename', 'status', 'created_by',
+                  'created_at', 'updated_at', 'game_type',)

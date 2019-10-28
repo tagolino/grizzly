@@ -1,31 +1,28 @@
 import re
 
 from django.utils.translation import ugettext as _
+from django.db.models import Sum
 from rest_framework import serializers
 
 from grizzly.lib import constants
 from promotion.models import (Announcement,
+                              GAME_TYPE_LIVE,
                               Promotion,
                               PromotionElement,
                               PromotionBet,
                               PromotionBetLevel,
                               PromotionBetMonthly,
                               PromotionClaim,
+                              ImportExportLog,
                               Summary)
 
 
 class AnnouncementAdminSerializer(serializers.ModelSerializer):
-    '''
-    '''
-
     class Meta:
         model = Announcement
         fields = '__all__'
 
     def update(self, instance, validated_data):
-        '''
-        '''
-
         request = self.context['request']
 
         validated_data['updated_by'] = request.user
@@ -49,9 +46,6 @@ class AnnouncementAdminSerializer(serializers.ModelSerializer):
 
 
 class AnnouncementMemberSerializer(serializers.ModelSerializer):
-    '''
-    '''
-
     class Meta:
         model = Announcement
         fields = ('id', 'announcement', 'platform',
@@ -166,9 +160,6 @@ class PromotionClaimAdminSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        '''
-        '''
-
         request = self.context['request']
 
         validated_data['updated_by'] = request.user
@@ -220,6 +211,21 @@ class PromotionBetLevelAdminSerializer(serializers.ModelSerializer):
         model = PromotionBetLevel
         fields = '__all__'
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+
+        game_type = request.GET.get('game_type', '0')
+
+        if int(game_type) == GAME_TYPE_LIVE:
+            total_bonus = PromotionBetLevel.objects.\
+                filter(game_type=GAME_TYPE_LIVE,
+                       total_bet__lte=instance.total_bet).\
+                aggregate(Sum('bonus'))
+            ret['total_bonus'] = total_bonus.get('bonus__sum', 0.0)
+
+        return ret
+
 
 class PromotionBetAdminSerializer(serializers.ModelSerializer):
     class Meta:
@@ -227,9 +233,6 @@ class PromotionBetAdminSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def update(self, instance, validated_data):
-        '''
-        '''
-
         request = self.context['request']
         updater = request.user
 
@@ -358,6 +361,21 @@ class PromotionBetLevelSerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'total_bet', 'bonus',
                   'weekly_bonus', 'monthly_bonus')
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        request = self.context.get('request')
+
+        game_type = request.GET.get('game_type', '0')
+
+        if int(game_type) == GAME_TYPE_LIVE:
+            total_bonus = PromotionBetLevel.objects.\
+                filter(game_type=GAME_TYPE_LIVE,
+                       total_bet__lte=instance.total_bet).\
+                aggregate(Sum('bonus'))
+            ret['total_bonus'] = total_bonus.get('bonus__sum', 0.0)
+
+        return ret
+
 
 class SummaryAdminSerializer(serializers.ModelSerializer):
     class Meta:
@@ -367,6 +385,8 @@ class SummaryAdminSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         ret = super().to_representation(instance)
         request = self.context.get('request')
+
+        total_week_bonus = instance.current_week_bonus
 
         fields_expand = request.GET.get('opt_expand')
         if fields_expand:
@@ -385,6 +405,8 @@ class SummaryAdminSerializer(serializers.ModelSerializer):
                     'weekly_bonus': promotion_bet_level.weekly_bonus,
                     'monthly_bonus': promotion_bet_level.monthly_bonus
                 }
+
+                total_week_bonus += instance.promotion_bet_level.weekly_bonus
 
             if instance.previous_week_bet_level:
                 previous_week_bet_level = instance.previous_week_bet_level
@@ -407,6 +429,8 @@ class SummaryAdminSerializer(serializers.ModelSerializer):
                     'weekly_bonus': previous_month_bet_level.weekly_bonus,
                     'monthly_bonus': previous_month_bet_level.monthly_bonus
                 }
+
+        ret.update(total_week_bonus=total_week_bonus)
 
         return ret
 
@@ -444,11 +468,41 @@ class SummarySerializer(serializers.ModelSerializer):
 
         if instance.promotion_bet_level:
             bet_level = PromotionBetLevel.objects.filter(
+                game_type=instance.game_type,
                 total_bet__gt=instance.promotion_bet_level.total_bet)
 
             if bet_level.exists():
                 bet_diff = bet_level.first().total_bet - \
                     instance.total_promotion_bet
                 ret['bets_to_next_level'] = bet_diff
+
+        return ret
+
+
+class ImportExportLogAdminSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = ImportExportLog
+        fields = '__all__'
+
+    def create(self, validated_data):
+        request = self.context['request']
+
+        validated_data['created_by'] = request.user
+
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context['request']
+
+        validated_data['updated_by'] = request.user
+
+        return super().update(instance, validated_data)
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+
+        creator = instance.created_by
+        ret['created_by'] = creator.username if creator else None
 
         return ret

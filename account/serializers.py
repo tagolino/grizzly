@@ -115,6 +115,8 @@ class MemberAdminSerializer(serializers.ModelSerializer):
         updater = instance.updated_by
         ret['updated_by'] = updater.username if updater else None
 
+        total_week_bonus = instance.current_week_bonus
+
         fields_expand = request.GET.get('opt_expand')
         if fields_expand:
             if instance.promotion_bet_level:
@@ -126,6 +128,8 @@ class MemberAdminSerializer(serializers.ModelSerializer):
                     'weekly_bonus': instance.promotion_bet_level.weekly_bonus,
                     'monthly_bonus': instance.promotion_bet_level.monthly_bonus
                 }
+
+                total_week_bonus += instance.promotion_bet_level.weekly_bonus
 
             if instance.previous_week_bet_level:
                 ret['previous_week_bet_level'] = {
@@ -146,6 +150,8 @@ class MemberAdminSerializer(serializers.ModelSerializer):
                     'weekly_bonus': instance.previous_month_bet_level.weekly_bonus,
                     'monthly_bonus': instance.previous_month_bet_level.monthly_bonus
                 }
+
+        ret.update(total_week_bonus=total_week_bonus)
 
         return ret
 

@@ -8,6 +8,7 @@ from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Max
 from django.db.models.functions import Coalesce
+from django.utils import timezone
 
 from grizzly.utils import PathAndRename
 
@@ -34,6 +35,28 @@ GAME_TYPE_LIVE = 1
 GAME_TYPE_OPTIONS = (
     (GAME_TYPE_ELECTRONICS, 'Electronics'),
     (GAME_TYPE_LIVE, 'Live'),
+)
+
+REQUEST_LOG_ONGOING = 0
+REQUEST_LOG_COMPLETED = 1
+REQUEST_LOG_CANCELED = 2
+REQUEST_LOG_DELETED = 3
+REQUEST_LOG_STATUS_OPTIONS = (
+    (REQUEST_LOG_ONGOING, 'On-going'),
+    (REQUEST_LOG_COMPLETED, 'Completed'),
+    (REQUEST_LOG_CANCELED, 'Canceled'),
+    (REQUEST_LOG_DELETED, 'Deleted'),
+)
+
+EGAMES_DEPOSIT_IMPORT = 0
+EGAME_SUMMARY_EXPORT = 1
+LIVE_DEPOSIT_IMPORT = 2
+LIVE_SUMMARY_EXPORT = 3
+REQUEST_TYPE_OPTIONS = (
+    (EGAMES_DEPOSIT_IMPORT, 'Import Electronic Game Member Bets'),
+    (EGAME_SUMMARY_EXPORT, 'Export Electronic Member Bets Summary'),
+    (LIVE_DEPOSIT_IMPORT, 'Import Live Game Member Bets'),
+    (LIVE_SUMMARY_EXPORT, 'Export Live Member Bets Summary'),
 )
 
 
@@ -206,11 +229,13 @@ class PromotionBetLevel(models.Model):
 
     class Meta:
         db_table = 'promote_promotionbetlevel'
+        ordering = ('game_type', 'total_bet')
         permissions = (
             ('list_promotionbetlevel', 'Can list promotionbetlevel'),)
 
     def __str__(self):
-        return self.name
+        game_type = dict(GAME_TYPE_OPTIONS).get(self.game_type)
+        return f'{game_type} - {self.name}'
 
 
 class PromotionBet(models.Model):
@@ -239,6 +264,11 @@ class PromotionBet(models.Model):
     cycle_begin = models.DateTimeField(blank=True, null=True)
     cycle_end = models.DateTimeField(blank=True, null=True)
     memo = models.TextField(null=True, blank=True)
+    active = models.BooleanField(default=True)
+    request_log = models.ForeignKey('promotion.ImportExportLog',
+                                    null=True, blank=True,
+                                    related_name='bet_request',
+                                    on_delete=models.SET_NULL)
 
     class Meta:
         db_table = 'promote_promotionbet'
@@ -265,6 +295,9 @@ class PromotionBetMonthly(models.Model):
     game_type = models.IntegerField(default=0,
                                     null=True, blank=True,
                                     choices=GAME_TYPE_OPTIONS)
+    accumulated_bonus = models.FloatField(default=0.0)
+    total_weekly_bonus = models.FloatField(default=0.0)
+    month_bonus = models.FloatField(default=0.0)
 
     class Meta:
         db_table = 'promote_promotionbetmonthly'
@@ -297,6 +330,17 @@ class Summary(models.Model):
     total_promotion_bet = models.FloatField(default=0.0)
     total_promotion_bonus = models.FloatField(default=0.0)
     current_week_bonus = models.FloatField(default=0.0)
+    total_bonus = models.FloatField(default=0.0)
+    created_at = models.DateTimeField(default=timezone.now)
+    created_by = models.ForeignKey(User, null=True, blank=True,
+                                   related_name='summary_created_by',
+                                   on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True,
+                                      null=True, blank=True)
+    updated_by = models.ForeignKey(User,
+                                   null=True, blank=True,
+                                   related_name='summary_updated_by',
+                                   on_delete=models.SET_NULL)
 
     class Meta:
         db_table = 'promote_summary'
@@ -304,5 +348,39 @@ class Summary(models.Model):
             ('list_summary', 'Can list summary'),)
 
     def __str__(self):
-        game_type = dict(GAME_TYPE_OPTIONS).get(self.game_type)
+        game_type = f'{self.get_game_type_display(self.game_type)}'
         return f'{self.member.username} - {game_type}'
+
+    def get_game_type_display(self, game_type):
+        if game_type == GAME_TYPE_ELECTRONICS:
+            return 'Electronics'
+        elif game_type == GAME_TYPE_LIVE:
+            return 'Live'
+
+
+class ImportExportLog(models.Model):
+    game_type = models.IntegerField(default=0,
+                                    null=True, blank=True,
+                                    choices=GAME_TYPE_OPTIONS)
+    request_type = models.IntegerField(null=True, blank=True,
+                                       choices=REQUEST_TYPE_OPTIONS)
+    status = models.IntegerField(default=0,
+                                 null=True, blank=True,
+                                 choices=REQUEST_LOG_STATUS_OPTIONS)
+    memo = models.TextField(null=True, blank=True)
+    filename = models.CharField(max_length=255,
+                                null=True, blank=True)
+    created_by = models.ForeignKey(User, null=True, blank=True,
+                                   related_name='promotionbet_requestedby',
+                                   on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True,
+                                      null=True, blank=True)
+
+    class Meta:
+        db_table = 'promote_importexportlog'
+        permissions = (('list_importexportlog', 'Can list import/export log'),)
+
+    def __str__(self):
+        created_at = timezone.localtime(self.created_at)
+        return f'{created_at:%Y-%m-%d %H:%M:%S} - {self.game_type}'

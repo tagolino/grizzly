@@ -40,6 +40,8 @@ if 'WHITELIST' in os.environ:
     for host in whitelist.split(','):
         CORS_ORIGIN_WHITELIST += (host,)
 
+DEFAULT_REQUEST_RATE_LIMIT = '1/30.minute'
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -57,6 +59,9 @@ START_APPS = [
     'account',
     'loginsvc',
     'promotion',
+    'envelope',
+    'configsetting',
+    'ticket',
 ]
 INSTALLED_APPS += START_APPS
 
@@ -65,6 +70,10 @@ THIRD_PARTY_APPS = [
     'django_extensions',
     'corsheaders',
     'rest_framework',
+    'cms',
+    'import_export',
+    'captcha',
+    'drf_yasg',
 ]
 INSTALLED_APPS += THIRD_PARTY_APPS
 
@@ -178,3 +187,79 @@ STATIC_URL = '/static/'
 STATIC_ROOT = 'static'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 MEDIA_URL = '/media/'
+
+CELERY_RESULT_BACKEND = 'rpc://'
+CELERY_TIMEZONE = TIME_ZONE
+
+RABBITMQ_DEFAULT_USER = os.environ.get('RABBITMQ_DEFAULT_USER')
+RABBITMQ_DEFAULT_PASS = os.environ.get('RABBITMQ_DEFAULT_PASS')
+RABBITMQ_DEFAULT_VHOST = os.environ.get('RABBITMQ_DEFAULT_VHOST')
+RABBITMQ_HOST = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
+# Adjust for Google Cloud SDK Image
+BROKER_URL = (f'amqp://{RABBITMQ_DEFAULT_USER}:{RABBITMQ_DEFAULT_PASS}'
+              f'@{RABBITMQ_HOST}:5672/{RABBITMQ_DEFAULT_VHOST}')
+BROKER_HEARTBEAT = int(os.environ.get('RABBITMQ_HOST', 0))
+
+LOGGING = {
+           'version': 1,
+           'disable_existing_loggers': False,
+           'formatters': {
+               'verbose': {
+                   'format': '[%(asctime)s][%(name)s:%(lineno)s][%(levelname)s] %(message)s',
+                   'datefmt': '%Y/%b/%d %H:%M:%S'
+               },
+               'colored': {'()': 'colorlog.ColoredFormatter',
+                           'format': '[%(log_color)s%(asctime)s%(reset)s][%(name)s:%(lineno)s][%(log_color)s%(levelname)s%(reset)s] %(message)s',
+                           'datefmt': '%Y/%b/%d %H:%M:%S',
+                           'log_colors': {'DEBUG': 'cyan',
+                                          'INFO': 'green',
+                                          'WARNING': 'bold_yellow',
+                                          'ERROR': 'red',
+                                          'CRITICAL': 'red,bg_white'},
+                           'secondary_log_colors': {},
+                           'style': '%'},
+           },
+           'handlers': {
+               'console': {
+                   'level': 'DEBUG',
+                   'class': 'logging.StreamHandler',
+                   'formatter': 'colored'
+               },
+               'mail_admins': {
+                   'level': 'ERROR',
+                   'class': 'django.utils.log.AdminEmailHandler',
+               },
+           },
+           'loggers': {
+               'django': {
+                   'handlers': ['console'],
+                   'propagate': True,
+               },
+               'django.request': {
+                   'handlers': ['mail_admins'],
+                   'level': 'ERROR',
+               },
+           }
+}
+__app_logging = {'handlers': ['console', ],
+                 'level': 'DEBUG',
+                 'propagate': True}
+for proj_app in START_APPS:
+    LOGGING.get('loggers').update({proj_app: __app_logging})
+
+CDN_HOSTNAME = os.environ.get('CDN_HOSTNAME', '')
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+if os.environ.get('ENV') == 'production':
+    from .production_settings import *
+elif os.environ.get('ENV') == 'test':
+    from .test_settings import *
+else:
+    from .development_settings import *
+
+# Google Cloud Environments
+if os.environ.get('GAE_INSTANCE'):  # Google App Engine cloud deployment
+    from .gae_settings import *
+
+if os.environ.get('GKE'):
+    from .gke_settings import *

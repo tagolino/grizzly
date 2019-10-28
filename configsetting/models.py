@@ -16,7 +16,7 @@ class GlobalPreferencesManager(models.Manager):
 
         try:
             value = self.get(key=key).value
-        except GlobalPreferences.DoesNotExist:
+        except GlobalPreference.DoesNotExist:
             # fixtures not yet loaded
             return []
 
@@ -29,7 +29,7 @@ class GlobalPreferencesManager(models.Manager):
                 value = inst.image
             else:
                 value = inst.value
-        except GlobalPreferences.DoesNotExist:
+        except GlobalPreference.DoesNotExist:
             # fixtures not yet loaded
             return None
         return value

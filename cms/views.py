@@ -65,7 +65,7 @@ class PageMemberViewSet(mixins.RetrieveModelMixin,
     renderer_classes = [GrizzlyRenderer]
 
 
-class AdsRankViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+class AdsRankViewSet(mixins.CreateModelMixin, viewsets.ViewSet):
     model = Advertisement
     queryset = model.objects.all()
     permission_classes = [Or(IsAdmin, IsStaff)]

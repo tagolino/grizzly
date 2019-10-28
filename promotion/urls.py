@@ -28,6 +28,9 @@ manage_router.register(r'promotionbetlevels',
 manage_router.register(r'summary',
                        promote.SummaryAdminViewset,
                        base_name='promotionbetsummary')
+manage_router.register(r'promotion/requestlog',
+                       promote.ImportExportLogAdminViewset,
+                       base_name='promotion_importexportlog')
 
 member_router = routers.DefaultRouter()
 member_router.register(r'announcement',

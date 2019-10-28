@@ -17,7 +17,6 @@ def export_report(request):
         'promotion_claims': PromotionClaimReportWriter(request),
         'promotion_bets': PromotionBetReportWriter(request),
         'promotion_member': PromotionMemberReportWriter(request),
-        # Envelope Report
         'envelope_claims': EnvelopeClaimReportWriter(request),
     }
 

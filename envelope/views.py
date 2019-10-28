@@ -1,6 +1,6 @@
 import logging
-import random
 
+from datetime import timedelta
 from django.utils.translation import ugettext as _
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -21,22 +21,37 @@ from loginsvc.views import generate_response
 from envelope.filters import (EnvelopeAmountSettingFilter,
                               EnvelopeClaimFilter,
                               EnvelopeDepositFilter,
-                              EnvelopeLevelFilter)
+                              EnvelopeLevelFilter,
+                              EventTypeFilter,
+                              RequestLogFilter,
+                              RewardFilter)
 from envelope.models import (EnvelopeLevel,
                              EnvelopeDeposit,
                              EnvelopeClaim,
                              EnvelopeAmountSetting,
-                             ENVELOPE_TYPE_OPTIONS)
+                             EventType,
+                             RequestLog,
+                             TYPE_ENVELOPE_DEPOSIT_IMPORT,
+                             Reward,
+                             TYPE_WHEEL)
 from envelope.serializers import (EnvelopeClaimMemberSerializer,
                                   EnvelopeClaimAdminSerializer,
                                   EnvelopeDepositAdminSerializer,
+                                  EnvelopeDepositMemberSerializer,
                                   EnvelopeLevelAdminSerializer,
                                   EnvelopeLevelMemberSerializer,
-                                  EnvelopeSettingAdminSerializer)
+                                  EnvelopeSettingAdminSerializer,
+                                  EventTypeAdminSerializer,
+                                  EventTypeMemberSerializer,
+                                  RequestLogAdminSerializer,
+                                  RewardAdminSerializer,
+                                  RewardMemberSerializer)
 
 from configsetting.models import GlobalPreference
 
-from envelope.tasks import envelope_deposit_import
+from envelope.tasks import (envelope_deposit_import,
+                            cancel_request,)
+
 
 logger = logging.getLogger(__name__)
 
@@ -61,54 +76,56 @@ class EnvelopeClaimMemberViewset(mixins.CreateModelMixin,
         return EnvelopeClaim.objects.filter(**params).order_by('-created_at')
 
     def create(self, request, *args, **kwargs):
-        envelope_type = int(request.GET.get('type', 0))
-        envelope_type_desc = dict(ENVELOPE_TYPE_OPTIONS).get(
-            envelope_type, 'envelope').lower()
+        username = request.data.get('username', '')
 
-        remaining_amount = EnvelopeClaim.objects.\
-            remaining_pool_amount(envelope_type)
-        if round(remaining_amount, 2) == 0:
-            # No remaining pool
-            return Response(constants.NO_POOL_AMOUNT_LEFT, status=400)
+        event_type = EnvelopeClaim.objects.get_event_type(
+            request.data.get('event_type', 0))
+        if not event_type:
+            return Response(constants.INVALID_EVENT_TYPE, status=400)
 
-        username = request.data['username']
         # Get user claim left
-        user_claim_left = EnvelopeClaim.objects.\
-            get_quantity_left(username, envelope_type)
-        if user_claim_left == 0:
+        user_claim_left = EnvelopeClaim.objects.get_quantity_left(
+            username, event_type)
+        if user_claim_left is None:
+            return Response(constants.CANNOT_CLAIM_YET, status=400)
+        elif user_claim_left == 0:
             return Response(constants.NO_CLAIM_LEFT, status=400)
 
         data = {
             'username': username,
-            'amount': 0,
+            'amount': 0.0,
             'status': 0,
-            'envelope_type': envelope_type
+            'event_type': event_type.id
         }
 
-        threshold_range = EnvelopeClaim.objects.get_threshold_range(
-            username, envelope_type)
-        if threshold_range:
-            claim_amount = round(
-                random.uniform(float(threshold_range['min_amount']),
-                               float(threshold_range['max_amount'])), 2)
+        if event_type.is_reward:
+            reward = EnvelopeClaim.objects.get_reward(event_type)
+
+            data.update(reward=reward.id)
         else:
-            # Get random amount to claim
-            claim_amount_from = GlobalPreference.objects.\
-                get_value(f'{envelope_type_desc}_claim_amount_from')
-            claim_amount_to = GlobalPreference.objects.\
-                get_value(f'{envelope_type_desc}_claim_amount_to')
+            remaining_amount = EnvelopeClaim.objects.remaining_pool_amount(
+                event_type)
+            if round(remaining_amount, 2) <= 0:
+                # No remaining pool
+                return Response(constants.NO_POOL_AMOUNT_LEFT, status=400)
 
-            claim_amount = round(random.uniform(
-                float(claim_amount_from), float(claim_amount_to)), 2)
+            amount_threshold = EnvelopeClaim.objects.get_threshold_range(
+                username, event_type)
 
-        if remaining_amount > claim_amount:
-            data['amount'] = claim_amount
-        else:
-            # check if we can get remaining amount
-            if remaining_amount > 0:
-                data['amount'] = round(remaining_amount, 2)
+            if amount_threshold[0] == amount_threshold[1]:
+                return Response(constants.CANNOT_CLAIM_YET, status=400)
 
-        serializer = EnvelopeClaimMemberSerializer(data=data)
+            claim_amount = EnvelopeClaim.objects.get_claim_amount(
+                event_type, amount_threshold)
+
+            if remaining_amount > claim_amount:
+                data.update(amount=claim_amount)
+            else:
+                if remaining_amount > 0:
+                    data.update(amount=round(remaining_amount, 2))
+
+        serializer = EnvelopeClaimMemberSerializer(
+            data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
@@ -116,17 +133,29 @@ class EnvelopeClaimMemberViewset(mixins.CreateModelMixin,
 
     def list(self, request, *args, **kwargs):
         if request.query_params.get('total'):
-            data = self.get_queryset().filter(
-                created_at__date=timezone.now().date(),
-                status=1).aggregate(total=Sum('amount'))
+            today = timezone.localtime(timezone.now()).date()
+            event_type = EnvelopeClaim.objects.get_event_type(
+                request.GET.get('event_type', 0))
+            if not event_type:
+                return Response(constants.INVALID_EVENT_TYPE, status=400)
+            data = self.get_queryset().filter(created_at__date=today,
+                                              status=1,
+                                              event_type=event_type).\
+                aggregate(total=Sum('amount'))
             data['total'] = data.get('total', 0) or 0
             return Response(data)
         elif request.query_params.get('claim_left'):
-            username = self.request.GET.get('username')
-            envelope_type = request.GET.get('type', 0)
+            username = self.request.GET.get('username', '')
+            event_type = EnvelopeClaim.objects.get_event_type(
+                request.GET.get('event_type', 0))
+            if not event_type:
+                return Response(constants.INVALID_EVENT_TYPE, status=400)
 
             claim_left = EnvelopeClaim.objects.get_quantity_left(
-                username, envelope_type)
+                username, event_type)
+
+            if claim_left is None:
+                return Response(constants.CANNOT_CLAIM_YET, status=400)
 
             return Response({'claim_left': claim_left})
 
@@ -148,11 +177,27 @@ class EnvelopeClaimAdminViewset(mixins.ListModelMixin,
 
     @action(detail=False, methods=['put'])
     def approve_all(self, request):
-        envelope_type = request.GET.get('type', 0)
-        queryset = EnvelopeClaim.objects.filter(status=0,
-                                                envelope_type=envelope_type)
+        event_type = EnvelopeClaim.objects.get_event_type(
+            request.data.get('event_type', 0))
+        if not event_type:
+            return Response(constants.INVALID_EVENT_TYPE, status=400)
+
+        queryset = EnvelopeClaim.objects.filter(
+            status=0, event_type=event_type)
+
         total_before_update = queryset.count()
-        total_after_update = queryset.update(status=1)
+        total_after_update = 0
+
+        for envelope_claim in queryset:
+            try:
+                envelope_claim.status = 1
+                envelope_claim.memo = '点击通过所有'
+                envelope_claim.updated_by = request.user
+                envelope_claim.save()
+                total_after_update += 1
+            except Exception as e:
+                logger.error('An error occured in the middle of all approval')
+                logger.error(e)
 
         logger.info(f'Queried pending EnvelopeClaim count: \
             {total_before_update}')
@@ -205,13 +250,119 @@ class EnvelopeSettingAdminViewset(mixins.ListModelMixin,
                                   mixins.CreateModelMixin,
                                   mixins.UpdateModelMixin,
                                   mixins.RetrieveModelMixin,
-                                  mixins.DestroyModelMixin,
                                   viewsets.GenericViewSet):
     model = EnvelopeAmountSetting
     permission_classes = [Or(IsAdmin, IsStaff)]
     queryset = EnvelopeAmountSetting.objects.all()
     serializer_class = EnvelopeSettingAdminSerializer
     filter_class = EnvelopeAmountSettingFilter
+    renderer_classes = [GrizzlyRenderer]
+
+
+class EnvelopeDepositMemberViewset(mixins.ListModelMixin,
+                                   viewsets.GenericViewSet):
+    model = EnvelopeDeposit
+    permission_classes = []
+    queryset = EnvelopeDeposit.objects.all().order_by('-created_at')
+    serializer_class = EnvelopeDepositMemberSerializer
+    filter_class = EnvelopeDepositFilter
+    renderer_classes = [GrizzlyRenderer]
+
+    def get_queryset(self):
+        params = {}
+        if not self.request.GET.get('username'):
+            return EnvelopeDeposit.objects.none()
+        else:
+            params.update(username=self.request.GET.get('username'))
+
+        if not self.request.GET.get('event_type'):
+            return EnvelopeDeposit.objects.none()
+        else:
+            params.update(event_type__code=self.request.GET.get('event_type'))
+
+        return self.queryset.filter(**params)
+
+    def list(self, request, *args, **kwargs):
+        event_type = EnvelopeClaim.objects.get_event_type(
+            request.GET.get('event_type', 0))
+        if not event_type:
+            return Response(constants.INVALID_EVENT_TYPE, status=400)
+        elif event_type.is_reward:
+            qs = self.get_queryset().aggregate(Sum('amount'))
+            data = {
+                'username': request.GET.get('username'),
+                'amount': qs.get('amount__sum') or 0
+            }
+            return Response(data=data, status=200)
+
+        return super().list(args, kwargs)
+
+
+class RewardAdminViewset(mixins.ListModelMixin,
+                         mixins.CreateModelMixin,
+                         mixins.UpdateModelMixin,
+                         mixins.RetrieveModelMixin,
+                         viewsets.GenericViewSet):
+    model = Reward
+    permission_classes = [Or(IsAdmin, IsStaff)]
+    queryset = Reward.objects.all().order_by('id')
+    serializer_class = RewardAdminSerializer
+    filter_class = RewardFilter
+    renderer_classes = [GrizzlyRenderer]
+
+
+class RewardMemberViewset(mixins.ListModelMixin,
+                          mixins.RetrieveModelMixin,
+                          viewsets.GenericViewSet):
+    model = Reward
+    permission_classes = []
+    queryset = Reward.objects.all().order_by('id')
+    serializer_class = RewardMemberSerializer
+    filter_class = RewardFilter
+    renderer_classes = [GrizzlyRenderer]
+
+
+class EventTypeAdminViewset(mixins.ListModelMixin,
+                            mixins.RetrieveModelMixin,
+                            mixins.UpdateModelMixin,
+                            viewsets.GenericViewSet):
+    model = EventType
+    permission_classes = [Or(IsAdmin, IsStaff)]
+    queryset = EventType.objects.all().order_by('id')
+    serializer_class = EventTypeAdminSerializer
+    filter_class = EventTypeFilter
+    renderer_classes = [GrizzlyRenderer]
+
+
+class EventTypeMemberViewset(mixins.ListModelMixin,
+                             viewsets.GenericViewSet):
+    model = EventType
+    permission_classes = []
+    queryset = EventType.objects.all()
+    serializer_class = EventTypeMemberSerializer
+    filter_class = EventTypeFilter
+    renderer_classes = [GrizzlyRenderer]
+
+    def get_queryset(self):
+        params = {}
+        if not self.request.GET.get('code'):
+            return EventType.objects.none()
+        else:
+            params.update(code=self.request.GET.get('code'))
+
+        return self.queryset.filter(**params)
+
+
+class RequestLogAdminViewset(mixins.CreateModelMixin,
+                             mixins.ListModelMixin,
+                             mixins.RetrieveModelMixin,
+                             mixins.UpdateModelMixin,
+                             viewsets.GenericViewSet):
+    model = RequestLog
+    permission_classes = [Or(IsAdmin, IsStaff)]
+    queryset = RequestLog.objects.all().order_by('-created_at')
+    serializer_class = RequestLogAdminSerializer
+    filter_class = RequestLogFilter
     renderer_classes = [GrizzlyRenderer]
 
 
@@ -228,11 +379,16 @@ def import_file(request):
 
     if import_type == 'envelope_deposit':
         deposits = request.FILES.get('import_file')
-        envelope_type = request.GET.get('type', 0)
+        event_type = EventType.objects.filter(
+            code=request.data.get('event_type', ''))
 
         if not deposits:
             return generate_response(constants.NOT_ALLOWED,
                                      msg=_('No incoming files'))
+
+        if not event_type.exists():
+            return generate_response(constants.NOT_ALLOWED,
+                                     msg=_('Invalid event type'))
 
         file_name = deposits.__str__()
 
@@ -248,9 +404,21 @@ def import_file(request):
             return generate_response(constants.FIELD_ERROR,
                                      msg=_('Only supports csv and xlsx files'))
 
+        request_log = RequestLog.objects.create(
+            event_type=event_type.first(),
+            request_type=TYPE_ENVELOPE_DEPOSIT_IMPORT,
+            filename=file_name,
+            created_by=user,
+        )
+
+        cancel_request.apply_async((request_log.id,),
+                                   eta=timezone.now() + timedelta(minutes=60),
+                                   queue='envelope_operations')
+
         envelope_deposit_import.apply_async((import_data.dict,
                                              user.id,
-                                             envelope_type),
+                                             event_type.first().id,
+                                             request_log.id),
                                             queue='envelope_operations')
 
     else:

@@ -1,18 +1,23 @@
 import math
 
+from datetime import timedelta
 from django.core.cache import cache
+from django.db.models import Max
+from django.utils import timezone
 from django.utils.translation import ugettext as _
 from django.views.decorators.csrf import csrf_exempt
 from rest_condition import Or
 from rest_framework import mixins, viewsets
 from rest_framework.response import Response
-from rest_framework.decorators import (api_view,
+from rest_framework.decorators import (action,
+                                       api_view,
                                        renderer_classes)
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 from tablib import Dataset
 from time import time
 
+from configsetting.models import GlobalPreference
 from grizzly.lib import constants
 from grizzly.throttling import CustomAnonThrottle
 from grizzly.utils import (parse_request_for_token,
@@ -26,14 +31,21 @@ from promotion.filters import (AnnouncementFilter,
                                PromotionBetMonthlyFilter,
                                PromotionClaimFilter,
                                PromotionElementFilter,
+                               ImportExportLogFilter,
                                SummaryFilter)
 from promotion.models import (Announcement,
+                              EGAMES_DEPOSIT_IMPORT,
+                              LIVE_DEPOSIT_IMPORT,
+                              GAME_TYPE_ELECTRONICS,
+                              GAME_TYPE_LIVE,
                               Promotion,
                               PromotionElement,
                               PromotionClaim,
                               PromotionBet,
                               PromotionBetLevel,
                               PromotionBetMonthly,
+                              REQUEST_LOG_DELETED,
+                              ImportExportLog,
                               Summary)
 from promotion.serializers import (AnnouncementAdminSerializer,
                                    AnnouncementMemberSerializer,
@@ -49,9 +61,14 @@ from promotion.serializers import (AnnouncementAdminSerializer,
                                    PromotionBetMonthlySerializer,
                                    PromotionClaimAdminSerializer,
                                    PromotionClaimMemberSerializer,
+                                   ImportExportLogAdminSerializer,
                                    SummaryAdminSerializer,
                                    SummarySerializer)
-from promotion.tasks import promotion_bet_import
+from promotion.tasks import (cancel_request,
+                             delete_request,
+                             promotion_bet_import,
+                             revert_bets,
+                             update_member_bet_details,)
 
 
 class AnnouncementAdminViewSet(mixins.ListModelMixin,
@@ -60,9 +77,6 @@ class AnnouncementAdminViewSet(mixins.ListModelMixin,
                                mixins.RetrieveModelMixin,
                                mixins.DestroyModelMixin,
                                viewsets.GenericViewSet):
-    '''
-    '''
-
     model = Announcement
     permission_classes = [Or(IsAdmin, IsStaff)]
     serializer_class = AnnouncementAdminSerializer
@@ -71,9 +85,6 @@ class AnnouncementAdminViewSet(mixins.ListModelMixin,
     renderer_classes = [GrizzlyRenderer]
 
     def destroy(self, request, pk):
-        '''
-        '''
-
         ret = super(AnnouncementAdminViewSet, self).destroy(request, pk)
 
         # update rank of remaining item
@@ -88,9 +99,6 @@ class AnnouncementAdminViewSet(mixins.ListModelMixin,
 
 class AnnouncementMemberViewSet(mixins.ListModelMixin, viewsets.GenericViewSet,
                                 mixins.RetrieveModelMixin):
-    '''
-    '''
-
     model = Announcement
     permission_classes = []
     serializer_class = AnnouncementMemberSerializer
@@ -235,6 +243,7 @@ class PromotionBetLevelAdminViewset(mixins.ListModelMixin,
     permission_classes = [Or(IsAdmin, IsStaff)]
     queryset = PromotionBetLevel.objects.all().order_by('total_bet')
     serializer_class = PromotionBetLevelAdminSerializer
+    filter_class = PromotionBetLevelFilter
     renderer_classes = [GrizzlyRenderer]
 
 
@@ -251,13 +260,42 @@ class PromotionBetAdminViewset(mixins.ListModelMixin,
     serializer_class = PromotionBetAdminSerializer
     renderer_classes = [GrizzlyRenderer]
 
+    def destroy(self, request, pk):
+        instance = self.get_object()
+        user, user_grp = parse_request_for_token(request)
+
+        update_member_bet_details(instance, user)
+
+        instance.active = False
+        instance.save()
+
+        return generate_response(constants.ALL_OK)
+
+    @action(detail=False, methods=['put'])
+    def revert(self, request):
+        bet_ids = request.POST.get('bet_ids', '')
+        user, user_grp = parse_request_for_token(request)
+
+        bets = PromotionBet.objects.filter(
+            id__in=[int(bet_id) if bet_id else 0
+                    for bet_id in bet_ids.split(',')],
+            active=True)
+
+        revert_bets.apply_async(
+            (list(bets.values_list('id', flat=True)), user.id,),
+            queue='bet_operations')
+
+        bets.update(active=False)
+
+        return generate_response(constants.ALL_OK)
+
 
 class PromotionBetMonthlyAdminViewset(mixins.ListModelMixin,
                                       mixins.RetrieveModelMixin,
                                       viewsets.GenericViewSet):
     model = PromotionBetMonthly
     permission_classes = [Or(IsAdmin, IsStaff)]
-    queryset = PromotionBetMonthly.objects.all().order_by('-id')
+    queryset = PromotionBetMonthly.objects.all().order_by('-cycle_begin')
     filter_class = PromotionBetMonthlyFilter
     serializer_class = PromotionBetMonthlyAdminSerializer
     renderer_classes = [GrizzlyRenderer]
@@ -268,10 +306,32 @@ class PromotionBetViewset(mixins.ListModelMixin,
                           viewsets.GenericViewSet):
     model = PromotionBet
     permission_classes = []
-    queryset = PromotionBet.objects.all().order_by('-created_at')
+    queryset = PromotionBet.objects.filter(active=True).order_by('-created_at')
     filter_class = PromotionBetFilter
     serializer_class = PromotionBetSerializer
     renderer_classes = [GrizzlyRenderer]
+
+    def list(self, request):
+        game_type = request.GET.get('game_type', 0)
+        username = request.GET.get('username', '')
+        max_day_diff = GlobalPreference.objects.get_value(
+            'max_no_bet_days')
+
+        bets = PromotionBet.objects.filter(game_type=int(game_type),
+                                           member__username=username) \
+                                   .order_by('created_at')
+        if bets.exists():
+            last_bet = bets.last()
+            date_last_bet = timezone.localtime(last_bet.created_at)
+            today = timezone.localtime(timezone.now())
+
+            date_diff = today - date_last_bet
+
+            if date_diff.days > int(max_day_diff):
+                return generate_response(constants.ALL_OK,
+                                         _('一个月内没有投注的用户，将无法领取彩金'))
+
+        return super().list(request)
 
 
 class PromotionBetMonthlyViewset(mixins.ListModelMixin,
@@ -283,6 +343,28 @@ class PromotionBetMonthlyViewset(mixins.ListModelMixin,
     filter_class = PromotionBetMonthlyFilter
     serializer_class = PromotionBetMonthlySerializer
     renderer_classes = [GrizzlyRenderer]
+
+    def list(self, request):
+        game_type = request.GET.get('game_type', 0)
+        username = request.GET.get('username', '')
+        max_day_diff = GlobalPreference.objects.get_value(
+            'max_no_bet_days')
+
+        bets = PromotionBet.objects.filter(game_type=int(game_type),
+                                           member__username=username) \
+                                   .order_by('created_at')
+        if bets.exists():
+            last_bet = bets.last()
+            date_last_bet = timezone.localtime(last_bet.created_at)
+            today = timezone.localtime(timezone.now())
+
+            date_diff = today - date_last_bet
+
+            if date_diff.days > int(max_day_diff):
+                return generate_response(constants.ALL_OK,
+                                         _('一个月内没有投注的用户，将无法领取彩金'))
+
+        return super().list(request)
 
 
 class PromotionBetLevelViewset(mixins.ListModelMixin,
@@ -301,7 +383,7 @@ class SummaryAdminViewset(mixins.ListModelMixin,
                           viewsets.GenericViewSet):
     model = Summary
     permission_classes = [Or(IsAdmin, IsStaff)]
-    queryset = Summary.objects.all()
+    queryset = Summary.objects.all().order_by('member__username')
     filter_class = SummaryFilter
     serializer_class = SummaryAdminSerializer
     renderer_classes = [GrizzlyRenderer]
@@ -316,6 +398,28 @@ class SummaryViewset(mixins.RetrieveModelMixin,
     serializer_class = SummarySerializer
     filter_class = SummaryFilter
     renderer_classes = [GrizzlyRenderer]
+
+    def list(self, request):
+        game_type = request.GET.get('game_type', 0)
+        username = request.GET.get('username', '')
+        max_day_diff = GlobalPreference.objects.get_value(
+            'max_no_bet_days')
+
+        bets = PromotionBet.objects.filter(game_type=int(game_type),
+                                           member__username=username) \
+                                   .order_by('created_at')
+        if bets.exists():
+            last_bet = bets.last()
+            date_last_bet = timezone.localtime(last_bet.created_at)
+            today = timezone.localtime(timezone.now())
+
+            date_diff = today - date_last_bet
+
+            if date_diff.days > int(max_day_diff):
+                return generate_response(constants.ALL_OK,
+                                         _('一个月内没有投注的用户，将无法领取彩金'))
+
+        return super().list(request)
 
 
 class DummyThrottleAPI(viewsets.GenericViewSet):
@@ -361,6 +465,31 @@ class DummyThrottleAPI(viewsets.GenericViewSet):
         return Response()
 
 
+class ImportExportLogAdminViewset(mixins.CreateModelMixin,
+                                  mixins.ListModelMixin,
+                                  mixins.RetrieveModelMixin,
+                                  mixins.UpdateModelMixin,
+                                  mixins.DestroyModelMixin,
+                                  viewsets.GenericViewSet):
+    model = ImportExportLog
+    permission_classes = [Or(IsAdmin, IsStaff)]
+    queryset = ImportExportLog.objects.all().order_by('-created_at')
+    serializer_class = ImportExportLogAdminSerializer
+    filter_class = ImportExportLogFilter
+    renderer_classes = [GrizzlyRenderer]
+
+    def destroy(self, request, pk):
+        user, user_grp = parse_request_for_token(request)
+
+        request_log = ImportExportLog.objects.get(id=pk)
+        request_log.status = REQUEST_LOG_DELETED
+        request_log.save(update_fields=['status'])
+
+        delete_request.apply_async((pk, user.id,), queue='bet_operations')
+
+        return generate_response(constants.ALL_OK)
+
+
 @api_view(['POST'])
 @renderer_classes((GrizzlyRenderer,))
 @csrf_exempt
@@ -371,7 +500,12 @@ def import_file(request):
                                  _('Request not allowed'))
 
     import_type = request.GET.get('import_type')
-    game_type = request.GET.get('game_type', '0')
+    game_type = request.GET.get('game_type', GAME_TYPE_ELECTRONICS)
+    request_type = EGAMES_DEPOSIT_IMPORT
+    if int(game_type) == GAME_TYPE_ELECTRONICS:
+        request_type = EGAMES_DEPOSIT_IMPORT
+    elif int(game_type) == GAME_TYPE_LIVE:
+        request_type = LIVE_DEPOSIT_IMPORT
 
     if import_type == 'promotion_bets':
         new_bets = request.FILES.get('import_file')
@@ -393,8 +527,25 @@ def import_file(request):
             return generate_response(constants.FIELD_ERROR,
                                      msg=_('Only supports csv and xlsx files'))
 
+        if not {'username', 'amount'}.issubset(import_data.headers):
+            return generate_response(constants.FIELD_ERROR,
+                                     msg=_(f'Invalid file header format.'))
+
+        request_log = ImportExportLog.objects.create(
+            game_type=game_type,
+            request_type=request_type,
+            filename=file_name,
+            created_by=user,
+        )
+
+        cancel_request.apply_async((request_log.id,),
+                                   eta=timezone.now() + timedelta(minutes=60),
+                                   queue='bet_operations')
+
         promotion_bet_import.apply_async((import_data.dict,
-                                          user.id, int(game_type)),
+                                          user.id,
+                                          int(game_type),
+                                          request_log.id,),
                                          queue='bet_operations')
 
     else:
