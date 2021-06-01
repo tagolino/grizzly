@@ -16,7 +16,7 @@ Pillow==5.2.0
 pytz==2018.5
 requests==2.19.1
 six==1.11.0
-urllib3==1.23
+urllib3==1.26.5
 django-otp==0.5.0
 qrcode==6.0
 rest-condition==1.0.3
